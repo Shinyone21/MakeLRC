@@ -23,7 +23,7 @@ const AUDIO_FILE_EXTENSIONS = new Set([
 ]);
 
 type OutputFormat = "lrc" | "enhanced-lrc" | "webvtt" | "srt";
-type TimingMode = "line" | "word" | "char";
+type TimingMode = "line" | "segment";
 
 type Snapshot = {
   timings: Array<number | undefined>;
@@ -128,7 +128,8 @@ function tokenizeEnhancedText(text: string) {
 }
 
 function tokenizeForMode(text: string, mode: TimingMode) {
-  if (mode === "char") return Array.from(text);
+  if (mode === "line") return [text];
+  if (!/\s/.test(text)) return Array.from(text);
   return tokenizeEnhancedText(text);
 }
 
@@ -229,6 +230,7 @@ function readDraft(): Draft | null {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const draft = JSON.parse(raw) as Partial<Draft>;
+    const savedTimingMode = draft.timingMode as string | undefined;
     return {
       lyrics: normalizeLyrics(draft.lyrics ?? ""),
       timings: Array.isArray(draft.timings) ? draft.timings : [],
@@ -236,7 +238,9 @@ function readDraft(): Draft | null {
       activeIndex: Number.isInteger(draft.activeIndex) ? draft.activeIndex ?? 0 : 0,
       activeSegmentIndex: Number.isInteger(draft.activeSegmentIndex) ? draft.activeSegmentIndex ?? 0 : 0,
       format: draft.format ?? "lrc",
-      timingMode: draft.timingMode ?? "line",
+      timingMode: savedTimingMode === "word" || savedTimingMode === "char"
+        ? "segment"
+        : draft.timingMode ?? "line",
     };
   } catch {
     return null;
@@ -282,6 +286,8 @@ export function App() {
   const activeOutputRef = useRef<HTMLDivElement | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const displayedCentisecondRef = useRef(-1);
+  const activeIndexRef = useRef(initialDraft?.activeIndex ?? 0);
+  const activeSegmentIndexRef = useRef(initialDraft?.activeSegmentIndex ?? 0);
 
   const outputPreviewBlocks = useMemo(
     () => buildOutputPreviewBlocks(lines, timings, segmentTimings, format),
@@ -296,6 +302,14 @@ export function App() {
     () => tokenizeForMode(lines[activeIndex] ?? "", timingMode),
     [activeIndex, lines, timingMode],
   );
+
+  useEffect(() => {
+    activeIndexRef.current = activeIndex;
+  }, [activeIndex]);
+
+  useEffect(() => {
+    activeSegmentIndexRef.current = activeSegmentIndex;
+  }, [activeSegmentIndex]);
 
   const pushUndo = useCallback(() => {
     setUndoStack((stack) => {
@@ -370,31 +384,38 @@ export function App() {
     pushUndo();
     const audio = audioRef.current;
     const stampTime = audio?.currentTime ?? 0;
+    const currentLineIndex = clampLineIndex(activeIndexRef.current, lines.length);
+    const currentSegmentIndex = activeSegmentIndexRef.current;
 
     if (timingMode !== "line") {
+      const tokens = tokenizeForMode(lines[currentLineIndex] ?? "", timingMode);
       setSegmentTimings((current) => {
         const next = current.map((items) => [...items]);
-        const tokens = tokenizeForMode(lines[activeIndex] ?? "", timingMode);
-        const lineTimings = [...(next[activeIndex] ?? [])];
-        lineTimings[activeSegmentIndex] = stampTime;
+        const lineTimings = [...(next[currentLineIndex] ?? [])];
+        lineTimings[currentSegmentIndex] = stampTime;
         lineTimings.length = tokens.length;
-        next[activeIndex] = lineTimings;
+        next[currentLineIndex] = lineTimings;
         return next;
       });
 
-      if (activeSegmentIndex === 0) {
+      if (currentSegmentIndex === 0) {
         setTimings((current) => {
           const next = [...current];
-          next[activeIndex] = stampTime;
+          next[currentLineIndex] = stampTime;
           return next;
         });
       }
 
-      const tokenCount = activeTokens.length;
-      if (activeSegmentIndex + 1 < tokenCount) {
-        setActiveSegmentIndex((index) => index + 1);
+      const tokenCount = tokens.length;
+      if (currentSegmentIndex + 1 < tokenCount) {
+        const nextSegmentIndex = currentSegmentIndex + 1;
+        activeSegmentIndexRef.current = nextSegmentIndex;
+        setActiveSegmentIndex(nextSegmentIndex);
       } else {
-        setActiveIndex((index) => clampLineIndex(index + 1, lines.length));
+        const nextLineIndex = clampLineIndex(currentLineIndex + 1, lines.length);
+        activeIndexRef.current = nextLineIndex;
+        activeSegmentIndexRef.current = 0;
+        setActiveIndex(nextLineIndex);
         setActiveSegmentIndex(0);
       }
       return;
@@ -402,20 +423,15 @@ export function App() {
 
     setTimings((current) => {
       const next = [...current];
-      next[activeIndex] = stampTime;
+      next[currentLineIndex] = stampTime;
       return next;
     });
-    setActiveIndex((index) => clampLineIndex(index + 1, lines.length));
+    const nextLineIndex = clampLineIndex(currentLineIndex + 1, lines.length);
+    activeIndexRef.current = nextLineIndex;
+    activeSegmentIndexRef.current = 0;
+    setActiveIndex(nextLineIndex);
     setActiveSegmentIndex(0);
-  }, [
-    activeIndex,
-    activeSegmentIndex,
-    activeTokens.length,
-    lines,
-    pushUndo,
-    releaseButtonFocus,
-    timingMode,
-  ]);
+  }, [lines, pushUndo, releaseButtonFocus, timingMode]);
 
   const retakeCurrentLine = useCallback(() => {
     if (!lines.length) return;
@@ -445,7 +461,10 @@ export function App() {
 
   const moveActive = useCallback((delta: number) => {
     releaseButtonFocus();
-    setActiveIndex((index) => clampLineIndex(index + delta, lines.length));
+    const nextLineIndex = clampLineIndex(activeIndexRef.current + delta, lines.length);
+    activeIndexRef.current = nextLineIndex;
+    activeSegmentIndexRef.current = 0;
+    setActiveIndex(nextLineIndex);
     setActiveSegmentIndex(0);
   }, [lines.length, releaseButtonFocus]);
 
@@ -473,7 +492,10 @@ export function App() {
       ]);
       setTimings([...snapshot.timings]);
       setSegmentTimings(snapshot.segmentTimings.map((items) => [...items]));
-      setActiveIndex(clampLineIndex(snapshot.activeIndex, lines.length));
+      const nextLineIndex = clampLineIndex(snapshot.activeIndex, lines.length);
+      activeIndexRef.current = nextLineIndex;
+      activeSegmentIndexRef.current = snapshot.activeSegmentIndex;
+      setActiveIndex(nextLineIndex);
       setActiveSegmentIndex(snapshot.activeSegmentIndex);
       return stack.slice(0, -1);
     });
@@ -495,7 +517,10 @@ export function App() {
       ]);
       setTimings([...snapshot.timings]);
       setSegmentTimings(snapshot.segmentTimings.map((items) => [...items]));
-      setActiveIndex(clampLineIndex(snapshot.activeIndex, lines.length));
+      const nextLineIndex = clampLineIndex(snapshot.activeIndex, lines.length);
+      activeIndexRef.current = nextLineIndex;
+      activeSegmentIndexRef.current = snapshot.activeSegmentIndex;
+      setActiveIndex(nextLineIndex);
       setActiveSegmentIndex(snapshot.activeSegmentIndex);
       return stack.slice(0, -1);
     });
@@ -506,6 +531,8 @@ export function App() {
     pushUndo();
     setTimings([]);
     setSegmentTimings([]);
+    activeIndexRef.current = 0;
+    activeSegmentIndexRef.current = 0;
     setActiveIndex(0);
     setActiveSegmentIndex(0);
   }, [pushUndo, releaseButtonFocus]);
@@ -527,6 +554,8 @@ export function App() {
       [],
       ...current.slice(insertAt),
     ]);
+    activeIndexRef.current = insertAt;
+    activeSegmentIndexRef.current = 0;
     setActiveIndex(insertAt);
     setActiveSegmentIndex(0);
   }, [activeIndex, lines, pushUndo, releaseButtonFocus]);
@@ -891,12 +920,12 @@ export function App() {
                   value={timingMode}
                   onChange={(event) => {
                     setTimingMode(event.target.value as TimingMode);
+                    activeSegmentIndexRef.current = 0;
                     setActiveSegmentIndex(0);
                   }}
                 >
                   <option value="line">行</option>
-                  <option value="word">単語</option>
-                  <option value="char">文字</option>
+                  <option value="segment">詳細</option>
                 </select>
               </label>
               <label>
