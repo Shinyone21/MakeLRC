@@ -22,6 +22,7 @@ npm run build
 - Space または大きな打刻エリアのタップで現在行を打刻
 - 打ち直しで現在行のタイムスタンプの少し前へ戻って再試行
 - LRC、Enhanced LRC、WebVTT、SRT として出力
+- 出力形式を変更しても打刻済みの行タイミングを維持し、選択中の形式へ変換
 - 作業中の歌詞とタイミングを `localStorage` に一時保存
 
 ## Shortcuts

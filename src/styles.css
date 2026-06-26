@@ -319,12 +319,13 @@ select {
 }
 
 .output-line {
-  display: grid;
-  grid-template-columns: minmax(74px, auto) 1fr;
-  gap: 8px;
   padding: 4px 12px;
   min-height: 30px;
   overflow-wrap: anywhere;
+}
+
+.output-line span {
+  display: block;
 }
 
 .output-line.is-active {
@@ -456,8 +457,7 @@ select {
     max-height: 34vh;
   }
 
-  .shortcut-grid,
-  .output-line {
+  .shortcut-grid {
     grid-template-columns: 1fr;
   }
 }
