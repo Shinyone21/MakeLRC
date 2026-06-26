@@ -35,6 +35,18 @@ type Draft = {
   format: OutputFormat;
 };
 
+type OutputRow = {
+  index: number;
+  text: string;
+  time: number | undefined;
+};
+
+type OutputPreviewBlock = {
+  key: string;
+  lines: string[];
+  sourceIndex?: number;
+};
+
 function normalizeLyrics(text: string) {
   return text
     .replace(/\r\n/g, "\n")
@@ -71,35 +83,93 @@ function formatWebVttTime(seconds: number | undefined) {
   return formatSrtTime(seconds).replace(",", ".");
 }
 
+function getRows(lines: string[], timings: Array<number | undefined>): OutputRow[] {
+  return lines.map((text, index) => ({ index, text, time: timings[index] }));
+}
+
+function getCueRange(rows: OutputRow[], index: number) {
+  const row = rows[index];
+  const start = Number.isFinite(row.time) ? row.time ?? 0 : 0;
+  const nextTime = rows.slice(index + 1).find((candidate) => Number.isFinite(candidate.time))?.time;
+  const end = Math.max(start + 0.2, Number.isFinite(nextTime) ? nextTime ?? 0 : start + 4);
+  return { start, end };
+}
+
+function tokenizeEnhancedText(text: string) {
+  if (/\s/.test(text)) {
+    return text.match(/\S+\s*/g) ?? [text];
+  }
+
+  return Array.from(text);
+}
+
+function buildEnhancedLrcLine(row: OutputRow, rows: OutputRow[], index: number) {
+  const { start, end } = getCueRange(rows, index);
+  const tokens = tokenizeEnhancedText(row.text);
+  const duration = Math.max(0.2, end - start);
+  const step = tokens.length > 0 ? duration / tokens.length : 0;
+  const taggedText = tokens
+    .map((token, tokenIndex) => `<${formatLrcTime(start + step * tokenIndex)}>${token}`)
+    .join("");
+
+  return `[${formatLrcTime(row.time)}]${taggedText}`;
+}
+
+function buildOutputPreviewBlocks(
+  lines: string[],
+  timings: Array<number | undefined>,
+  format: OutputFormat,
+): OutputPreviewBlock[] {
+  const rows = getRows(lines, timings);
+
+  if (format === "webvtt") {
+    return [
+      { key: "webvtt-header", lines: ["WEBVTT"] },
+      ...rows.map((row, index) => {
+        const { start, end } = getCueRange(rows, index);
+        return {
+          key: `webvtt-${row.index}`,
+          sourceIndex: row.index,
+          lines: [`${formatWebVttTime(start)} --> ${formatWebVttTime(end)}`, row.text],
+        };
+      }),
+    ];
+  }
+
+  if (format === "srt") {
+    return rows.map((row, index) => {
+      const { start, end } = getCueRange(rows, index);
+      return {
+        key: `srt-${row.index}`,
+        sourceIndex: row.index,
+        lines: [String(index + 1), `${formatSrtTime(start)} --> ${formatSrtTime(end)}`, row.text],
+      };
+    });
+  }
+
+  if (format === "enhanced-lrc") {
+    return rows.map((row, index) => ({
+      key: `enhanced-lrc-${row.index}`,
+      sourceIndex: row.index,
+      lines: [buildEnhancedLrcLine(row, rows, index)],
+    }));
+  }
+
+  return rows.map((row) => ({
+    key: `lrc-${row.index}`,
+    sourceIndex: row.index,
+    lines: [`[${formatLrcTime(row.time)}]${row.text}`],
+  }));
+}
+
 function clampLineIndex(index: number, lineCount: number) {
   return Math.min(Math.max(index, 0), Math.max(0, lineCount - 1));
 }
 
 function buildOutput(lines: string[], timings: Array<number | undefined>, format: OutputFormat) {
-  const rows = lines.map((text, index) => ({ index, text, time: timings[index] }));
-
-  if (format === "webvtt") {
-    const cues = rows.map((row, index) => {
-      const start = Number.isFinite(row.time) ? row.time : 0;
-      const nextTime = rows.slice(index + 1).find((candidate) => Number.isFinite(candidate.time))?.time;
-      const end = Math.max((start ?? 0) + 0.2, Number.isFinite(nextTime) ? nextTime ?? 0 : (start ?? 0) + 4);
-      return `${formatWebVttTime(start)} --> ${formatWebVttTime(end)}\n${row.text}`;
-    });
-    return ["WEBVTT", "", ...cues].join("\n\n");
-  }
-
-  if (format === "srt") {
-    return rows
-      .map((row, index) => {
-        const start = Number.isFinite(row.time) ? row.time : 0;
-        const nextTime = rows.slice(index + 1).find((candidate) => Number.isFinite(candidate.time))?.time;
-        const end = Math.max((start ?? 0) + 0.2, Number.isFinite(nextTime) ? nextTime ?? 0 : (start ?? 0) + 4);
-        return `${index + 1}\n${formatSrtTime(start)} --> ${formatSrtTime(end)}\n${row.text}`;
-      })
-      .join("\n\n");
-  }
-
-  return rows.map((row) => `[${formatLrcTime(row.time)}]${row.text}`).join("\n");
+  const blocks = buildOutputPreviewBlocks(lines, timings, format);
+  const separator = format === "srt" || format === "webvtt" ? "\n\n" : "\n";
+  return blocks.map((block) => block.lines.join("\n")).join(separator);
 }
 
 function readDraft(): Draft | null {
@@ -153,6 +223,10 @@ export function App() {
   const animationFrameRef = useRef<number | null>(null);
   const displayedCentisecondRef = useRef(-1);
 
+  const outputPreviewBlocks = useMemo(
+    () => buildOutputPreviewBlocks(lines, timings, format),
+    [format, lines, timings],
+  );
   const output = useMemo(() => buildOutput(lines, timings, format), [format, lines, timings]);
   const activeLine = lines[activeIndex] ?? "歌詞を入力してください";
 
@@ -634,18 +708,19 @@ export function App() {
         <section className="preview-panel" aria-label="出力プレビュー">
           <div className="panel-heading">
             <h2>出力</h2>
-            <span>{lines.length}行</span>
+            <span>{lines.length}行 / {format}</span>
           </div>
           <div ref={outputPreviewRef} className="output-preview" role="textbox" aria-readonly="true" tabIndex={0}>
             {!lines.length && <div className="output-empty">出力はここに表示されます。</div>}
-            {lines.map((line, index) => (
+            {outputPreviewBlocks.map((block) => (
               <div
-                key={`${index}-${line}`}
-                ref={index === activeIndex ? activeOutputRef : undefined}
-                className={`output-line${index === activeIndex ? " is-active" : ""}`}
+                key={block.key}
+                ref={block.sourceIndex === activeIndex ? activeOutputRef : undefined}
+                className={`output-line${block.sourceIndex === activeIndex ? " is-active" : ""}`}
               >
-                <span className="output-time">[{formatLrcTime(timings[index])}]</span>
-                <span>{line}</span>
+                {block.lines.map((line) => (
+                  <span key={line}>{line}</span>
+                ))}
               </div>
             ))}
           </div>
