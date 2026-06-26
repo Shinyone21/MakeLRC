@@ -338,7 +338,6 @@ export function App() {
     () => tokenizeForMode(lines[activeIndex] ?? "", timingMode),
     [activeIndex, lines, timingMode],
   );
-  const activeToken = activeTokens[activeSegmentIndex] ?? "";
 
   useEffect(() => {
     activeIndexRef.current = activeIndex;
@@ -952,8 +951,14 @@ export function App() {
               <strong id="activeLine">
                 {timingMode === "line" || !activeTokens.length ? activeLine : (
                   <>
-                    <span className="segment-progress">{activeSegmentIndex + 1}/{activeTokens.length}</span>
-                    <span className="active-token is-current">{activeToken}</span>
+                    {activeTokens.map((token, index) => (
+                      <span
+                        key={`${index}-${token}`}
+                        className={`active-token${index === activeSegmentIndex ? " is-current" : ""}`}
+                      >
+                        {token}
+                      </span>
+                    ))}
                   </>
                 )}
               </strong>
